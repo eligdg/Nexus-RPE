@@ -1,0 +1,81 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function hasRole(role) {
+      return isSignedIn() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == role;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // --- Users ---
+    match /users/{userId} {
+      function isValidUser(data) {
+        return data.keys().hasAll(['email', 'role']) &&
+               data.email is string && data.email.size() <= 200 &&
+               data.role in ['admin', 'manager', 'user'];
+      }
+
+      allow get: if isOwner(userId) || hasRole('admin');
+      allow list: if hasRole('admin');
+      allow create: if isSignedIn() && isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if (isOwner(userId) || hasRole('admin')) && 
+                     isValidUser(request.resource.data) &&
+                     request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'photoURL', 'role']);
+    }
+
+    // --- CRM Contacts ---
+    match /contacts/{contactId} {
+      function isValidContact(data) {
+        return data.keys().hasAll(['name', 'type', 'ownerId']) &&
+               data.name is string && data.name.size() <= 100 &&
+               data.ownerId == request.auth.uid;
+      }
+      
+      allow read: if isSignedIn() && (resource.data.ownerId == request.auth.uid || hasRole('admin'));
+      allow create: if isSignedIn() && isValidContact(request.resource.data);
+      allow update: if isSignedIn() &&
+                    (resource.data.ownerId == request.auth.uid || hasRole('admin')) &&
+                    isValidContact(request.resource.data);
+      allow delete: if hasRole('admin') || (resource.data.ownerId == request.auth.uid);
+    }
+
+    // --- Products ---
+    match /products/{productId} {
+      allow read: if isSignedIn();
+      allow write: if hasRole('admin') || hasRole('manager');
+    }
+
+    // --- Invoices ---
+    match /invoices/{invoiceId} {
+      allow read: if isSignedIn() && (resource.data.ownerId == request.auth.uid || hasRole('admin'));
+      allow write: if isSignedIn() && (request.resource.data.ownerId == request.auth.uid || hasRole('admin'));
+    }
+
+    // --- Projects & Tasks ---
+    match /projects/{projectId} {
+      allow read: if isSignedIn() && (resource.data.ownerId == request.auth.uid || hasRole('admin'));
+      allow write: if isSignedIn() && (request.resource.data.ownerId == request.auth.uid || hasRole('admin'));
+
+      match /tasks/{taskId} {
+        allow read: if isSignedIn() && (get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || hasRole('admin'));
+        allow write: if isSignedIn() && (get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || hasRole('admin'));
+      }
+    }
+  }
+}
